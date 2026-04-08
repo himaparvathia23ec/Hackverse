@@ -242,6 +242,9 @@ export default function InterviewCoPilot() {
   const [aiStatus, setAiStatus] = useState({ checked: false, online: false, message: 'Checking AI service...' });
   const [fallbackState, setFallbackState] = useState({ active: false, reason: '' });
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [targetRole, setTargetRole] = useState('');
+  const [jobDescription, setJobDescription] = useState('');
+  const [recordingElapsedSec, setRecordingElapsedSec] = useState(0);
   // HIREMIND-AUDIT: cooldown/lock references were previously in this component and are removed.
 
   // --- REFS ---
@@ -495,8 +498,13 @@ export default function InterviewCoPilot() {
       setResumeState('extracting');
       let parsed;
       try {
-        const out = await apiParseResume(rawText);
+        const out = await apiParseResume(rawText, { targetRole, jobDescription });
         parsed = out.parsed;
+        if (out?._fallback) {
+          setFallbackState({ active: true, reason: out._fallbackReason || 'Resume parsing fallback is active.' });
+        } else if (aiStatus.online) {
+          setFallbackState({ active: false, reason: '' });
+        }
       } catch (apiErr) {
         console.warn('Resume parse API fallback:', apiErr);
         setFallbackState({ active: true, reason: 'Resume parsing API failed. Using local parser fallback.' });
@@ -506,9 +514,14 @@ export default function InterviewCoPilot() {
       let personalizedQuestions;
       let questionMeta = [];
       try {
-        const out = await apiGenerateQuestions(parsed);
+        const out = await apiGenerateQuestions(parsed, { targetRole, jobDescription });
         questionMeta = out.flat || [];
         personalizedQuestions = questionMeta.map((q) => q.question).filter(Boolean);
+        if (out?._fallback) {
+          setFallbackState({ active: true, reason: out._fallbackReason || 'Question generation fallback is active.' });
+        } else if (aiStatus.online) {
+          setFallbackState({ active: false, reason: '' });
+        }
       } catch (apiErr) {
         console.warn('Question generation API fallback:', apiErr);
         setFallbackState({ active: true, reason: 'Question generation API failed. Using local question fallback.' });
@@ -522,6 +535,8 @@ export default function InterviewCoPilot() {
         raw: rawText,
         personalizedQuestions,
         questionMeta,
+        targetRole,
+        jobDescription,
       });
       questionMetaMapRef.current = new Map(
         questionMeta.map((q) => [q.question, { category: q.category, topic: q.topic, hint: q.hint }])
@@ -613,6 +628,14 @@ export default function InterviewCoPilot() {
     const closingLine = 'This demonstrates clear communication, relevance, and confidence.';
     const fullScript = improvedAnswer || `${openingLine} ${corePoints.join('. ')}. ${closingLine}`;
     return { openingLine, corePoints, closingLine, fullScript };
+  };
+  const buildIdealAnswer = (q, behavioral, resume) => {
+    const keyPhrase = String(q || 'this interview question').replace(/\s+/g, ' ').trim();
+    const role = targetRole || resume?.title || 'this role';
+    if (behavioral) {
+      return `When I stepped into ${role}, the first thing I noticed was that our team had recurring execution gaps around ${keyPhrase}. I took ownership of the issue, aligned stakeholders on one measurable goal, and created a clear action plan with weekly checkpoints. I led the execution end-to-end, including risk tracking, communication, and decision-making under pressure. Within six weeks, we improved delivery speed by 32% while reducing defects by 24%. I also documented the process so the team could repeat it without dependency on me. This gave leadership confidence in my ability to handle ambiguity and drive outcomes. That experience taught me that strong ownership means combining structure, communication, and measurable impact.`;
+    }
+    return `When I approach a question like "${keyPhrase}" for ${role}, I begin by clarifying requirements, constraints, and success criteria before proposing any solution. I then lay out a practical architecture with explicit trade-offs so interviewers can see decision quality, not just raw knowledge. Next, I describe implementation steps, scaling strategy, and failure handling with concrete examples from prior work. In one project, this approach helped reduce p95 latency by 38% over a four-week optimization cycle. I close by explaining how I would validate outcomes using metrics, observability, and incremental rollout. This structure shows both technical depth and product thinking while staying grounded in business impact. That experience taught me that great technical answers are clear, measurable, and directly tied to the problem being solved.`;
   };
   const buildQuestionSpecificReplacements = (q, answerText, behavioral) => {
     const words = String(answerText || '').split(/\s+/).filter(Boolean);
@@ -889,6 +912,8 @@ export default function InterviewCoPilot() {
           resumeContext: resumeData
             ? { name: resumeData.name, title: resumeData.title, skills: resumeData.skills, projects: resumeData.projects }
             : null,
+          targetRole,
+          jobDescription,
           attemptNumber: (previousAttempt ? priorForQuestion.length + 1 : 1),
           previousAttemptSummary: previousAttempt
             ? `Overall ${previousAttempt.overall}; strengths: ${(previousAttempt.strengths || []).join('; ')}; weaknesses: ${(previousAttempt.weaknesses || []).join('; ')}`
@@ -903,6 +928,11 @@ export default function InterviewCoPilot() {
           );
         });
         const scores = { ...EMPTY_SCORES, ...(data.scores || {}) };
+        if (data?._fallback) {
+          setFallbackState({ active: true, reason: data._fallbackReason || 'Coaching fallback is active.' });
+        } else if (aiStatus.online) {
+          setFallbackState({ active: false, reason: '' });
+        }
         const record = {
           question: q,
           answer: answerText,
@@ -918,7 +948,7 @@ export default function InterviewCoPilot() {
           missingKeywords: Array.isArray(data.missingKeywords) ? data.missingKeywords.slice(0, 8) : [],
           fillerInsights: data.fillerInsights || extractFillerBreakdown(answerText || ''),
           improvedAnswer: data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
-          idealAnswer: data.idealAnswer || '',
+          idealAnswer: data.idealAnswer || buildIdealAnswer(q, isBehavioral, resumeData),
           practiceScript: data.practiceScript || buildPracticeScript(
             q,
             data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
@@ -1007,7 +1037,7 @@ export default function InterviewCoPilot() {
           missingKeywords: isBehavioral ? ['situation', 'action', 'result'] : ['trade-off', 'scale', 'impact'],
           fillerInsights: fillerInfo,
           improvedAnswer: buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
-          idealAnswer: '',
+          idealAnswer: buildIdealAnswer(q, isBehavioral, resumeData),
           practiceScript: buildPracticeScript(q, buildHireReadyAnswer(q, isBehavioral, answerText, resumeData), isBehavioral),
           scores: fallbackScores,
         });
@@ -1021,13 +1051,19 @@ export default function InterviewCoPilot() {
         });
       }
     };
-  }, [dominantEmotion, isBehavioral]);
+  }, [dominantEmotion, isBehavioral, targetRole, jobDescription, resumeData, attemptHistory, aiStatus.online]);
 
   useEffect(() => {
     if (isRecording) {
-      timerRef.current = setInterval(() => setSessionSeconds((prev) => prev + 1), 1000);
+      timerRef.current = setInterval(() => {
+        setSessionSeconds((prev) => prev + 1);
+        if (recordingStartRef.current) {
+          setRecordingElapsedSec(Math.max(0, Math.floor((Date.now() - recordingStartRef.current) / 1000)));
+        }
+      }, 1000);
     } else {
       clearInterval(timerRef.current);
+      setRecordingElapsedSec(0);
     }
     return () => {
       clearInterval(timerRef.current);
@@ -1190,6 +1226,7 @@ export default function InterviewCoPilot() {
     if (isRecording) {
       manualStopRef.current = true;
       setIsRecording(false);
+      setRecordingElapsedSec(0);
       stopRecognitionNow();
       if (micStreamRef.current) {
         micStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -1257,6 +1294,11 @@ export default function InterviewCoPilot() {
         })),
       });
       if (out?.nextQuestion) {
+        if (out?._fallback) {
+          setFallbackState({ active: true, reason: out._fallbackReason || 'Adaptive next-question fallback is active.' });
+        } else if (aiStatus.online) {
+          setFallbackState({ active: false, reason: '' });
+        }
         setQuestion(out.nextQuestion);
         setAdaptiveInfo({
           reason: out.reason || '',
@@ -1313,8 +1355,10 @@ export default function InterviewCoPilot() {
           <span className="text-[10px] uppercase font-bold tracking-widest text-gray-400">Real-time AI Guidance</span>
         </div>
         <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-100">
-          <div className="w-2 h-2 rounded-full bg-confidence animate-pulse-dot" />
-          <span className="text-[11px] font-bold text-confidence">Live · Ready</span>
+          <div className={`w-2 h-2 rounded-full ${fallbackState.active ? 'bg-red-500' : 'bg-confidence'} animate-pulse-dot`} />
+          <span className={`text-[11px] font-bold ${fallbackState.active ? 'text-red-600' : 'text-confidence'}`}>
+            {fallbackState.active ? 'Fallback · Active' : 'Live AI · Ready'}
+          </span>
         </div>
       </header>
 
@@ -1465,6 +1509,9 @@ export default function InterviewCoPilot() {
             <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${aiStatus.online ? 'bg-confidence/10 text-confidence border-confidence/20' : 'bg-[#FEF9ED] text-[#B8860B] border-[#E8D5A0]'}`}>
               {aiStatus.checked ? aiStatus.message : 'Checking AI service...'}
             </span>
+            <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${fallbackState.active ? 'bg-red-50 text-red-600 border-red-100' : 'bg-blue-50 text-blue-700 border-blue-100'}`}>
+              {fallbackState.active ? 'Fallback coaching active' : 'Live AI'}
+            </span>
             {fallbackState.active && (
               <>
                 <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border bg-red-50 text-red-600 border-red-100">
@@ -1497,6 +1544,21 @@ export default function InterviewCoPilot() {
                 </button>
                 <span className="font-playfair italic text-linen text-xl">Upload</span>
               </div>
+            </div>
+            <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input
+                type="text"
+                value={targetRole}
+                onChange={(e) => setTargetRole(e.target.value)}
+                placeholder="Optional target role (e.g., Backend Engineer)"
+                className="w-full bg-cream border border-gray-200 rounded-xl p-3 text-sm font-medium focus:border-wine focus:ring-2 focus:ring-wine/5 outline-none placeholder:text-gray-300"
+              />
+              <textarea
+                value={jobDescription}
+                onChange={(e) => setJobDescription(e.target.value)}
+                placeholder="Optional job description focus (used for question generation/coaching)"
+                className="w-full min-h-[46px] bg-cream border border-gray-200 rounded-xl p-3 text-sm font-medium focus:border-wine focus:ring-2 focus:ring-wine/5 outline-none placeholder:text-gray-300 resize-y"
+              />
             </div>
 
             {!resumeData ? (
@@ -1661,6 +1723,8 @@ export default function InterviewCoPilot() {
               <LiveAnswerHelper
                 transcript={answerTranscript}
                 expectedKeywords={isBehavioral ? ['example', 'result', 'team', 'impact'] : ['approach', 'trade-off', 'result', 'scale']}
+                elapsedSeconds={recordingElapsedSec}
+                isBehavioral={isBehavioral}
               />
             )}
             {coachState === 'done' && (
@@ -1761,6 +1825,14 @@ export default function InterviewCoPilot() {
                           ...((coachInsights.fillerInsights?.alternatives || []).slice(0, 1)),
                         ]}
                       />
+                      <div className="bg-white border border-gray-100 rounded-xl p-3 mb-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Interview Assessment Report</div>
+                        <p className="text-gray-700 mb-1"><span className="font-semibold">Top strengths:</span> {(coachInsights.strengths?.slice(0, 2) || ['Clear communication']).join(' | ')}</p>
+                        <p className="text-gray-700 mb-1"><span className="font-semibold">Top improvements:</span> {(coachInsights.weaknesses?.slice(0, 2) || ['Add more specific metrics']).join(' | ')}</p>
+                        <p className="text-gray-700 mb-1"><span className="font-semibold">Filler stats:</span> {coachInsights.fillerInsights?.count || 0} fillers, density {coachInsights.fillerInsights?.densityPer100Words || 0} / 100 words</p>
+                        <p className="text-gray-700 mb-1"><span className="font-semibold">Final recommendation:</span> {avgScore(coachInsights.scores) >= 7 ? 'Strong interview-ready answer. Keep practicing with sharper metrics.' : 'Improve structure and measurable outcomes before next attempt.'}</p>
+                        <p className="text-gray-700"><span className="font-semibold">Next 3 likely questions:</span> {(followups || []).slice(0, 3).join(' | ') || 'What did you learn? | How would you improve it? | What trade-offs did you make?'}</p>
+                      </div>
                       <div className="bg-white border border-gray-100 rounded-xl p-3 mb-3">
                         <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">What You Said Well</div>
                         {(coachInsights.whatWasGood?.length ? coachInsights.whatWasGood : ['Good attempt. Add stronger evidence and outcomes.']).map((item, i) => (

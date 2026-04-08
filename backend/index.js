@@ -41,7 +41,7 @@ function extractJson(text) {
 
 app.post('/api/resume/parse', requireKey, async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, targetRole, jobDescription } = req.body;
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'Missing text' });
     }
@@ -53,7 +53,8 @@ app.post('/api/resume/parse', requireKey, async (req, res) => {
   "projects": [{ "name": "", "techStack": [], "description": "" }],
   "education": [{ "degree": "", "institution": "", "year": "" }],
   "certifications": []
-}`;
+}
+If target role or job description context is provided, align inferred strengths and emphasis toward that role.`;
 
     const msg = await anthropic.messages.create({
       model: MODEL,
@@ -61,7 +62,7 @@ app.post('/api/resume/parse', requireKey, async (req, res) => {
       messages: [
         {
           role: 'user',
-          content: `Resume text:\n\n${text.slice(0, 120000)}\n\n${prompt}`,
+          content: `Target role: ${targetRole || 'n/a'}\nJob description context: ${(jobDescription || 'n/a').slice(0, 4000)}\n\nResume text:\n\n${text.slice(0, 120000)}\n\n${prompt}`,
         },
       ],
     });
@@ -80,11 +81,12 @@ app.post('/api/resume/parse', requireKey, async (req, res) => {
 
 app.post('/api/resume/questions', requireKey, async (req, res) => {
   try {
-    const { parsed } = req.body;
+    const { parsed, targetRole, jobDescription } = req.body;
     if (!parsed || typeof parsed !== 'object') {
       return res.status(400).json({ error: 'Missing parsed resume object' });
     }
     const system = `You are an expert interviewer. Based on the candidate's resume data, generate 20 interview questions — a mix of HR, Technical, and Project-based — realistic and appropriately challenging.
+Align to target role/JD context when provided.
 
 Return ONLY valid JSON:
 {
@@ -101,7 +103,7 @@ The three arrays must total exactly 20 questions.`;
       messages: [
         {
           role: 'user',
-          content: [{ type: 'text', text: `Resume Data: ${JSON.stringify(parsed)}` }],
+          content: [{ type: 'text', text: `Target role: ${targetRole || 'n/a'}\nJob description context: ${(jobDescription || 'n/a').slice(0, 4000)}\nResume Data: ${JSON.stringify(parsed)}` }],
         },
       ],
     });
@@ -155,6 +157,8 @@ app.post('/api/coach', requireKey, async (req, res) => {
       previousAttemptSummary,
       fillerInsights,
       resumeContext,
+      targetRole,
+      jobDescription,
     } = req.body;
     if (!question || typeof question !== 'string') {
       return res.status(400).json({ error: 'Missing question' });
@@ -225,6 +229,8 @@ Attempt number: ${Number(attemptNumber) || 1}
 Previous attempt summary: ${previousAttemptSummary || 'n/a'}
 
 Resume context (if available): ${resumeContext ? JSON.stringify(resumeContext).slice(0, 3000) : 'n/a'}
+Target role context: ${targetRole || 'n/a'}
+Job description context: ${(jobDescription || 'n/a').slice(0, 4000)}
 Client filler insights: ${fillerInsights ? JSON.stringify(fillerInsights) : 'n/a'}`;
 
     const msg = await anthropic.messages.create({
@@ -259,6 +265,7 @@ Client filler insights: ${fillerInsights ? JSON.stringify(fillerInsights) : 'n/a
       ? data.practiceScript.corePoints.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 3)
       : [];
     const safeImprovedAnswer = String(data.improvedAnswer || data.improvedAnswerExample || '').trim();
+    const safeIdealAnswer = String(data.idealAnswer || '').trim();
 
     res.json({
       feedback: data.feedback || data.intro || '',
@@ -275,7 +282,7 @@ Client filler insights: ${fillerInsights ? JSON.stringify(fillerInsights) : 'n/a
         ],
       },
       improvedAnswer: safeImprovedAnswer,
-      idealAnswer: String(data.idealAnswer || '').trim(),
+      idealAnswer: safeIdealAnswer || safeImprovedAnswer || `When I prepared for this exact question, I started by clarifying the context and what success looked like. I then explained the specific task I owned and why it mattered to the business. Next, I walked through the actions I took, including trade-offs and collaboration with key stakeholders. I included a concrete metric, timeline, or measurable outcome to prove impact. I closed by connecting the result back to the original question so the answer felt complete and relevant. I also highlighted one thing I would improve if I repeated the same scenario today. That experience taught me that clear structure, measurable outcomes, and self-awareness are what make an answer stand out.`,
       practiceScript: {
         openingLine: String(data.practiceScript?.openingLine || '').trim(),
         corePoints: safeCorePoints.length ? safeCorePoints : ['Context', 'Action', 'Result'],

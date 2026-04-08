@@ -1,6 +1,6 @@
 # Hackverse — Interview Co-Pilot
 
-Real-time interview practice with optional webcam feedback, speech-to-text answers, resume-aware AI questions, Claude coaching, and a downloadable session report.
+Real-time interview practice with optional webcam feedback, speech-to-text answers, resume-aware AI questions, Claude coaching, and in-app session reporting.
 
 ---
 
@@ -83,6 +83,45 @@ npm run preview
 | `POST` | `/api/report` | Session summary JSON for the report file |
 
 If `ANTHROPIC_API_KEY` is missing, AI routes return **503**; the app uses local fallbacks where implemented.
+
+---
+
+## Architecture snapshot
+
+- **Frontend (`frontend`)**: React + Vite UI, browser speech recognition/synthesis, live coaching panels.
+- **Backend (`backend`)**: Express API for resume parsing, question generation, coaching, and adaptive next question.
+- **AI Provider**: Anthropic Claude via backend only (API key never exposed in frontend).
+- **Flow**: Resume upload -> parse -> generate questions -> record answer -> coach feedback -> practice loop.
+
+---
+
+## How real-time works
+
+- **During recording (real-time)**:
+  - live transcript updates
+  - filler count updates
+  - live helper cues (missing keywords, pacing, STAR-structure nudges)
+- **After stop (full-answer coaching)**:
+  - `/api/coach` analyzes the complete final transcript
+  - returns scores, phrase replacements, missing keywords, improved answer, ideal answer, practice script
+
+---
+
+## Fallback behavior
+
+- If backend AI is unavailable or times out, UI switches to **Fallback mode active**.
+- Resume parsing/questions/coaching still provide safe deterministic local output so demo never goes blank.
+- A visible status chip indicates whether you are in **Live AI** or **Fallback coaching active** mode.
+
+---
+
+## Demo flow (90 seconds)
+
+1. Upload resume and optionally enter target role + JD focus.
+2. Generate a question and click mic to answer for ~20 seconds.
+3. Show live cues while speaking (keywords/filler/pacing hints).
+4. Stop recording -> open coaching output (scores + replacements + improved + ideal answer).
+5. Click Practice Mode, repeat once, show match score improvement.
 
 ---
 
