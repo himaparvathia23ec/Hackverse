@@ -523,6 +523,22 @@ export default function InterviewCoPilot() {
   };
 
   const detectBehavioral = (val) => /tell me about a time|describe a time|give me an example/i.test(val);
+  const pickPreferredVoice = (voices) => {
+    if (!voices?.length) return null;
+    const score = (v) => {
+      const name = String(v.name || '').toLowerCase();
+      const lang = String(v.lang || '').toLowerCase();
+      let s = 0;
+      if (/^en-us/.test(lang)) s += 60;
+      else if (/^en-gb/.test(lang)) s += 50;
+      else if (/^en/.test(lang)) s += 30;
+      if (/google|microsoft|natural|neural|premium|enhanced/.test(name)) s += 40;
+      if (/female|samantha|aria|jenny|zira|allison|ava|emma/.test(name)) s += 12;
+      if (/compact|eloquence/.test(name)) s -= 25;
+      return s;
+    };
+    return [...voices].sort((a, b) => score(b) - score(a))[0] || voices[0] || null;
+  };
   const buildHireReadyAnswer = (q, behavioral) => {
     if (behavioral) {
       return `A strong answer for this question would be: "In my previous role, I was assigned a high-priority challenge where timelines were tight and expectations were clear. I aligned with stakeholders on success criteria, broke the work into milestones, and proactively communicated risks. I implemented the solution in phases, validated each step with data, and adjusted quickly based on feedback. As a result, we delivered on time, improved the key metric we targeted, and created a repeatable process the team still uses. That experience taught me to combine ownership, clear communication, and measurable outcomes in every project."`;
@@ -534,9 +550,10 @@ export default function InterviewCoPilot() {
     try {
       if (speechSynthesisRef.current) window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 0.98;
+      utter.rate = 0.94;
       utter.pitch = 1;
       utter.volume = 1;
+      utter.lang = 'en-US';
       const voices = window.speechSynthesis.getVoices?.() || [];
       const currentKey = selectedVoiceKeyRef.current;
       let stableVoice = null;
@@ -544,15 +561,15 @@ export default function InterviewCoPilot() {
         stableVoice = voices.find((v) => `${v.name}::${v.lang}` === currentKey) || null;
       }
       if (!stableVoice) {
-        stableVoice =
-          voices.find((v) => /en-US/i.test(v.lang)) ||
-          voices.find((v) => /en-GB/i.test(v.lang)) ||
-          voices.find((v) => /^en/i.test(v.lang)) ||
-          voices[0] ||
-          null;
+        stableVoice = pickPreferredVoice(voices);
         if (stableVoice) selectedVoiceKeyRef.current = `${stableVoice.name}::${stableVoice.lang}`;
       }
       if (stableVoice) utter.voice = stableVoice;
+      if (!stableVoice && !voices.length) {
+        setTimeout(() => {
+          if (!speechSynthesisRef.current) speakQuestion(text);
+        }, 120);
+      }
       speechSynthesisRef.current = utter;
       window.speechSynthesis.speak(utter);
     } catch {
@@ -711,11 +728,7 @@ export default function InterviewCoPilot() {
       if (selectedVoiceKeyRef.current) return;
       const voices = synth.getVoices?.() || [];
       if (!voices.length) return;
-      const preferred =
-        voices.find((v) => /en-US/i.test(v.lang)) ||
-        voices.find((v) => /en-GB/i.test(v.lang)) ||
-        voices.find((v) => /^en/i.test(v.lang)) ||
-        voices[0];
+      const preferred = pickPreferredVoice(voices);
       if (preferred) selectedVoiceKeyRef.current = `${preferred.name}::${preferred.lang}`;
     };
     resolveStableVoice();
