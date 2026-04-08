@@ -45,6 +45,34 @@ function countFillers(text) {
   return total;
 }
 
+function extractFillerBreakdown(text) {
+  const normalized = normalizeSpeechText(text);
+  const words = normalized ? normalized.split(/\s+/).filter(Boolean) : [];
+  const totalWords = words.length;
+  const counts = {};
+  let count = 0;
+  for (const phrase of FILLER_PHRASES) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${escaped}\\b`, 'g');
+    const m = normalized.match(re);
+    if (m?.length) {
+      counts[phrase] = m.length;
+      count += m.length;
+    }
+  }
+  const densityPer100Words = totalWords ? Math.round((count / totalWords) * 100) : 0;
+  const topFillers = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([k, v]) => `${k} (${v})`);
+  const alternatives = [
+    'Use a short pause instead of fillers.',
+    'Use transitions: "specifically", "therefore", "for example".',
+    'State impact directly with numbers.',
+  ];
+  return { count, densityPer100Words, topFillers, alternatives };
+}
+
 // --- DUMMY DATA ---
 const ROLES = {
   'Software Engineer': ["Tell me about a time you resolved a critical production bug.", "How would you design a rate limiter for an API?", "Describe a time you disagreed with your tech lead."],
@@ -181,7 +209,11 @@ export default function InterviewCoPilot() {
     strengths: [],
     weaknesses: [],
     transcriptEvidence: [],
-    improvedAnswerExample: '',
+    whatWasGood: [],
+    whatToReplace: [],
+    missingKeywords: [],
+    fillerInsights: { count: 0, densityPer100Words: 0, topFillers: [], alternatives: [] },
+    improvedAnswer: '',
     scores: EMPTY_SCORES,
   });
   const [attemptHistory, setAttemptHistory] = useState([]);
@@ -539,11 +571,22 @@ export default function InterviewCoPilot() {
     };
     return [...voices].sort((a, b) => score(b) - score(a))[0] || voices[0] || null;
   };
-  const buildHireReadyAnswer = (q, behavioral) => {
+  const buildHireReadyAnswer = (q, behavioral, answerText, resume) => {
+    const cleanQuestion = String(q || '').trim();
+    const cleanAnswer = String(answerText || '').trim();
+    const resumeBits = [
+      resume?.title || '',
+      ...(resume?.skills || []).slice(0, 3),
+      resume?.projects?.[0]?.name || '',
+    ].filter(Boolean);
+    const keyPhrase = cleanQuestion.split(/[?.!]/)[0]?.slice(0, 120) || 'this question';
+    const proof = cleanAnswer
+      ? `In my previous response, I mentioned ${cleanAnswer.split(/\s+/).slice(0, 10).join(' ')}... I would now make it stronger by adding measurable impact.`
+      : 'I would answer with a clear structure and measurable outcomes.';
     if (behavioral) {
-      return `A strong answer for this question would be: "In my previous role, I was assigned a high-priority challenge where timelines were tight and expectations were clear. I aligned with stakeholders on success criteria, broke the work into milestones, and proactively communicated risks. I implemented the solution in phases, validated each step with data, and adjusted quickly based on feedback. As a result, we delivered on time, improved the key metric we targeted, and created a repeatable process the team still uses. That experience taught me to combine ownership, clear communication, and measurable outcomes in every project."`;
+      return `For "${keyPhrase}", I would answer in STAR format: Situation: briefly set context relevant to ${resumeBits[0] || 'my role'}. Task: define what success required. Action: explain the exact steps I took, including collaboration and decision-making. Result: quantify outcome (for example, reduced latency, improved conversion, or faster delivery). ${proof} This version is specific, outcome-driven, and aligned to the role.`;
     }
-    return `A strong answer for this question would be: "I would start by clarifying requirements, constraints, and success metrics. Then I would propose a practical design with clear trade-offs, explain why I chose specific technologies, and cover edge cases like scale, failures, and security. I would also describe how I would test and monitor the solution in production, including performance baselines and rollback strategy. In a recent project, this structured approach helped me deliver a reliable solution with measurable impact, and it is the same way I would approach this problem here."`;
+    return `For "${keyPhrase}", I would begin by clarifying requirements and constraints, then propose a practical design with trade-offs, edge cases, and validation plan. I would relate it to my background in ${resumeBits.join(', ') || 'software engineering'} and include one measurable result from prior work. ${proof} This answer directly addresses the question and demonstrates clear technical judgment.`;
   };
   const speakQuestion = (text) => {
     if (!text || typeof window === 'undefined' || !window.speechSynthesis) return;
@@ -779,12 +822,16 @@ export default function InterviewCoPilot() {
           isBehavioral,
           dominantEmotion,
           emotionTip,
+          fillerInsights: extractFillerBreakdown(answerText || ''),
+          resumeContext: resumeData
+            ? { name: resumeData.name, title: resumeData.title, skills: resumeData.skills, projects: resumeData.projects }
+            : null,
           attemptNumber: (previousAttempt ? priorForQuestion.length + 1 : 1),
           previousAttemptSummary: previousAttempt
             ? `Overall ${previousAttempt.overall}; strengths: ${(previousAttempt.strengths || []).join('; ')}; weaknesses: ${(previousAttempt.weaknesses || []).join('; ')}`
             : '',
         });
-        const fullText = `${data.intro || ''}${emotionTip ? `\n\n${emotionTip}` : ''}`;
+        const fullText = `${data.feedback || data.intro || ''}${emotionTip ? `\n\n${emotionTip}` : ''}`;
         streamWords(fullText, () => {
           setCoachState('done');
           setStreamText(
@@ -803,13 +850,21 @@ export default function InterviewCoPilot() {
           strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
           weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
           transcriptEvidence: Array.isArray(data.transcriptEvidence) ? data.transcriptEvidence.slice(0, 4) : [],
-          improvedAnswerExample: data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral),
+          whatWasGood: Array.isArray(data.whatWasGood) ? data.whatWasGood.slice(0, 6) : [],
+          whatToReplace: Array.isArray(data.whatToReplace) ? data.whatToReplace.slice(0, 6) : [],
+          missingKeywords: Array.isArray(data.missingKeywords) ? data.missingKeywords.slice(0, 8) : [],
+          fillerInsights: data.fillerInsights || extractFillerBreakdown(answerText || ''),
+          improvedAnswer: data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
         };
         setCoachInsights({
           strengths: record.strengths,
           weaknesses: record.weaknesses,
           transcriptEvidence: record.transcriptEvidence,
-          improvedAnswerExample: record.improvedAnswerExample,
+          whatWasGood: record.whatWasGood,
+          whatToReplace: record.whatToReplace,
+          missingKeywords: record.missingKeywords,
+          fillerInsights: record.fillerInsights,
+          improvedAnswer: record.improvedAnswer,
           scores: record.scores,
         });
         const fu = data.followups?.filter(Boolean) || [];
@@ -867,11 +922,23 @@ export default function InterviewCoPilot() {
           confidence: answerText ? 6 : 4,
           relevance: isBehavioral ? 7 : 8,
         };
+        const fillerInfo = extractFillerBreakdown(answerText || '');
+        const words = String(answerText || '').split(/\s+/).filter(Boolean);
+        const whatToReplace = words.length
+          ? [
+            { original: words.slice(0, 4).join(' '), better: 'I led the implementation with clear milestones', reason: 'Makes ownership explicit.' },
+            { original: words.slice(-4).join(' '), better: 'This improved performance by X% with measurable impact', reason: 'Adds outcomes and credibility.' },
+          ]
+          : [];
         setCoachInsights({
           strengths: ['Good effort under pressure.'],
           weaknesses: ['Use more specific examples and measurable outcomes.'],
           transcriptEvidence: answerText ? [`You said: "${answerText.slice(0, 120)}${answerText.length > 120 ? '…' : ''}"`] : [],
-          improvedAnswerExample: buildHireReadyAnswer(q, isBehavioral),
+          whatWasGood: answerText ? ['You attempted a direct answer.'] : [],
+          whatToReplace,
+          missingKeywords: isBehavioral ? ['situation', 'action', 'result'] : ['trade-off', 'scale', 'impact'],
+          fillerInsights: fillerInfo,
+          improvedAnswer: buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
           scores: fallbackScores,
         });
         sessionLogRef.current.push({
@@ -1083,6 +1150,10 @@ export default function InterviewCoPilot() {
 
   const handleCoachMe = () => {
     if (coachState === 'loading' || !question) return;
+    if (isRecordingRef.current) {
+      setSpeechError('Stop recording first so coaching can evaluate your full final answer.');
+      return;
+    }
     const text = transcriptRef.current || answerTranscript;
     const run = runCoachRef.current;
     if (typeof run === 'function') run(text);
@@ -1611,18 +1682,49 @@ export default function InterviewCoPilot() {
                         strengths={coachInsights.strengths}
                         weaknesses={coachInsights.weaknesses}
                         suggestions={[
+                          ...(coachInsights.missingKeywords || []).slice(0, 2).map((k) => `Add keyword: ${k}`),
                           ...(coachInsights.transcriptEvidence?.slice(0, 1) || []),
-                          'Use the STAR method for behavioral answers.',
-                          'Quantify outcomes with metrics.',
+                          ...((coachInsights.fillerInsights?.alternatives || []).slice(0, 1)),
                         ]}
                       />
+                      <div className="bg-white border border-gray-100 rounded-xl p-3 mb-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">What You Said Well</div>
+                        {(coachInsights.whatWasGood?.length ? coachInsights.whatWasGood : ['Good attempt. Add stronger evidence and outcomes.']).map((item, i) => (
+                          <p key={`good-${i}`} className="text-gray-700 mb-1">• {item}</p>
+                        ))}
+                      </div>
+                      <div className="bg-white border border-gray-100 rounded-xl p-3 mb-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Replace These Phrases</div>
+                        {(coachInsights.whatToReplace?.length ? coachInsights.whatToReplace : []).map((row, i) => (
+                          <p key={`rep-${i}`} className="text-gray-700 mb-1">
+                            • "<span className="line-through">{row.original}</span>" {'->'} "<span className="font-semibold">{row.better}</span>" ({row.reason})
+                          </p>
+                        ))}
+                        {!coachInsights.whatToReplace?.length && (
+                          <p className="text-gray-500">• No phrase replacements identified. Keep language specific and measurable.</p>
+                        )}
+                      </div>
+                      <div className="bg-white border border-gray-100 rounded-xl p-3 mb-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Missing Keywords To Include</div>
+                        {(coachInsights.missingKeywords?.length ? coachInsights.missingKeywords : ['impact', 'result']).map((k, i) => (
+                          <span key={`mk-${i}`} className="inline-block mr-1 mb-1 px-2 py-0.5 rounded-full bg-cream border border-linen text-[11px] text-gray-700">{k}</span>
+                        ))}
+                      </div>
+                      <div className="bg-white border border-gray-100 rounded-xl p-3 mb-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Filler Words Found</div>
+                        <p className="text-gray-700 mb-1">
+                          • Count: {coachInsights.fillerInsights?.count || 0} | Density: {coachInsights.fillerInsights?.densityPer100Words || 0} per 100 words
+                        </p>
+                        <p className="text-gray-700 mb-1">• Top fillers: {(coachInsights.fillerInsights?.topFillers || []).join(', ') || 'None detected'}</p>
+                        <p className="text-gray-700">• Preferred alternatives: {(coachInsights.fillerInsights?.alternatives || []).join(' | ') || 'Use short pauses and clear transition words.'}</p>
+                      </div>
                       <div className="hire-ready-card">
                         <div className="hire-ready-header">
-                          <span className="hire-ready-badge">✅ Hire-Ready Answer</span>
+                          <span className="hire-ready-badge">✅ Final Corrected Answer</span>
                           <p className="hire-ready-subtitle">What you should say</p>
                         </div>
                         <div className="hire-ready-body">
-                          {coachInsights.improvedAnswerExample || buildHireReadyAnswer(question, isBehavioral)}
+                          {coachInsights.improvedAnswer || buildHireReadyAnswer(question, isBehavioral, answerTranscript, resumeData)}
                         </div>
                         <div className="hire-ready-why">
                           <h4>Why this answer works:</h4>

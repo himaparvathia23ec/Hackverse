@@ -153,6 +153,8 @@ app.post('/api/coach', requireKey, async (req, res) => {
       emotionTip,
       attemptNumber,
       previousAttemptSummary,
+      fillerInsights,
+      resumeContext,
     } = req.body;
     if (!question || typeof question !== 'string') {
       return res.status(400).json({ error: 'Missing question' });
@@ -161,14 +163,21 @@ app.post('/api/coach', requireKey, async (req, res) => {
 
     const system = `You are an expert interview coach. Respond with ONLY valid JSON (no markdown):
 {
-  "intro": "2-4 sentences of feedback on the candidate's answer (or note if empty).",
   "feedback": "One concise coaching paragraph.",
+  "whatWasGood": ["exact phrase from user answer", "..."],
+  "whatToReplace": [{ "original": "", "better": "", "reason": "" }],
+  "missingKeywords": ["", "", ""],
+  "fillerInsights": {
+    "count": 0,
+    "densityPer100Words": 0,
+    "topFillers": [""],
+    "alternatives": [""]
+  },
+  "improvedAnswer": "A polished, hire-ready sample answer in first person.",
   "strengths": ["", "", ""],
   "weaknesses": ["", "", ""],
   "transcriptEvidence": ["exact phrase or quote from the candidate transcript", "..."],
-  "improvedAnswerExample": "A polished, hire-ready sample answer in first person.",
   "scores": { "clarity": 0, "confidence": 0, "relevance": 0 },
-  "star": { "s": "", "t": "", "a": "", "r": "" },
   "followups": ["", "", ""]
 }
 Rules:
@@ -176,12 +185,13 @@ Rules:
   - Clarity (0-10): How clear and understandable is the answer?
   - Confidence (0-10): Does the speaker sound confident and assured?
   - Relevance (0-10): How directly does the answer address the question?
-- For behavioral questions, fill STAR with concise bullets tailored to the answer.
-- For technical questions, STAR can be concise but still useful.
+- Use the full transcript holistically before judging; do not grade partial snippets.
+- Quote exact phrases from the transcript in whatWasGood and transcriptEvidence where possible.
 - If the answer is empty, mention it in intro and provide corrective guidance.
-- improvedAnswerExample must be a hire-ready answer the candidate can say verbatim in interview.
-- Keep improvedAnswerExample in first person ("I"), 90-140 words, specific, outcome-focused, and confident.
-- transcriptEvidence must cite concrete snippets from the candidate answer when possible (exact words or concise paraphrase).
+- improvedAnswer must be question-specific and aligned to user context.
+- Keep improvedAnswer in first person ("I"), 90-140 words, specific, outcome-focused, and confident.
+- whatToReplace should be phrase-level edits from user transcript (at least 2 when possible).
+- Include fillerInsights and practical alternatives.
 - If this is not the first attempt, compare against prior attempt summary and reward real improvements.`;
 
     const user = `Interview question: ${question}
@@ -194,7 +204,10 @@ Question style: ${isBehavioral ? 'behavioral (use STAR)' : 'technical/other'}
 Optional context — dominant expression: ${dominantEmotion || 'unknown'}. Tip: ${emotionTip || 'n/a'}
 
 Attempt number: ${Number(attemptNumber) || 1}
-Previous attempt summary: ${previousAttemptSummary || 'n/a'}`;
+Previous attempt summary: ${previousAttemptSummary || 'n/a'}
+
+Resume context (if available): ${resumeContext ? JSON.stringify(resumeContext).slice(0, 3000) : 'n/a'}
+Client filler insights: ${fillerInsights ? JSON.stringify(fillerInsights) : 'n/a'}`;
 
     const msg = await anthropic.messages.create({
       model: MODEL,
@@ -208,19 +221,46 @@ Previous attempt summary: ${previousAttemptSummary || 'n/a'}`;
     if (!data) {
       return res.status(422).json({ error: 'Could not parse coach JSON from model.' });
     }
+    const safeReplace = Array.isArray(data.whatToReplace)
+      ? data.whatToReplace
+        .map((row) => ({
+          original: String(row?.original || '').trim(),
+          better: String(row?.better || '').trim(),
+          reason: String(row?.reason || '').trim(),
+        }))
+        .filter((row) => row.original && row.better)
+        .slice(0, 6)
+      : [];
+    const safeTopFillers = Array.isArray(data.fillerInsights?.topFillers)
+      ? data.fillerInsights.topFillers.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 6)
+      : [];
+    const safeAlternatives = Array.isArray(data.fillerInsights?.alternatives)
+      ? data.fillerInsights.alternatives.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 6)
+      : [];
+
     res.json({
-      intro: data.intro || '',
       feedback: data.feedback || data.intro || '',
+      whatWasGood: Array.isArray(data.whatWasGood) ? data.whatWasGood.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 6) : [],
+      whatToReplace: safeReplace,
+      missingKeywords: Array.isArray(data.missingKeywords) ? data.missingKeywords.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 8) : [],
+      fillerInsights: {
+        count: Math.max(0, Number(data.fillerInsights?.count) || Number(fillerInsights?.count) || 0),
+        densityPer100Words: Math.max(0, Number(data.fillerInsights?.densityPer100Words) || Number(fillerInsights?.densityPer100Words) || 0),
+        topFillers: safeTopFillers.length ? safeTopFillers : (Array.isArray(fillerInsights?.topFillers) ? fillerInsights.topFillers : []),
+        alternatives: safeAlternatives.length ? safeAlternatives : [
+          'Replace filler with a short pause.',
+          'Use transition words like "specifically", "therefore", "for example".',
+        ],
+      },
+      improvedAnswer: String(data.improvedAnswer || data.improvedAnswerExample || '').trim(),
       strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
       weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
       transcriptEvidence: Array.isArray(data.transcriptEvidence) ? data.transcriptEvidence.slice(0, 4) : [],
-      improvedAnswerExample: data.improvedAnswerExample || '',
       scores: {
         clarity: Math.max(0, Math.min(10, Number(data.scores?.clarity) || 0)),
         confidence: Math.max(0, Math.min(10, Number(data.scores?.confidence) || 0)),
         relevance: Math.max(0, Math.min(10, Number(data.scores?.relevance) || 0)),
       },
-      star: data.star || { s: '', t: '', a: '', r: '' },
       followups: Array.isArray(data.followups) ? data.followups.slice(0, 5) : [],
     });
   } catch (e) {
