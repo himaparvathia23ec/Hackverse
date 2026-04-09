@@ -2,7 +2,12 @@ import { MOCK_COACH_RESPONSE, MOCK_QUESTIONS } from './utils/mockResponses.js';
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
 const DEFAULT_TIMEOUT_MS = 12000;
-const STOPWORDS = new Set(['the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'with', 'on', 'is', 'are', 'you', 'your', 'how', 'what', 'why', 'when', 'where', 'do', 'does', 'did', 'would', 'could', 'should', 'tell', 'about', 'me']);
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'with', 'on', 'is', 'are', 'you', 'your',
+  'how', 'what', 'why', 'when', 'where', 'do', 'does', 'did', 'would', 'could', 'should', 'tell', 'about', 'me',
+  'describe', 'time', 'received', 'receive', 'took', 'take', 'faced', 'situation', 'involving', 'example',
+  'give', 'given', 'facing', 'challenge', 'challenging',
+]);
 
 async function handleJson(res) {
   const text = await res.text();
@@ -33,7 +38,7 @@ function extractKeywords(question, limit = 4) {
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w && w.length > 2 && !STOPWORDS.has(w))
+    .filter((w) => w && w.length > 2 && !STOPWORDS.has(w) && !/^\d+$/.test(w))
     .slice(0, limit);
 }
 
